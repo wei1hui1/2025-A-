@@ -2,7 +2,7 @@
 clc; clear; close all;
 
 %% ----------------- 参数设置 -----------------
-h_idx = 18; % 高度索引
+h_idx = 8; % 高度索引
 
 % 导弹速度
 v_m = 300;  % m/s
@@ -94,29 +94,66 @@ for ih = 1:numH
     end
 end
 
-%% 计算最优航向角
+%% 计算最优航向角（导弹到航线距离，加权距离，权重=评分）
 
 h = heights(h_idx);
-U = UAVs(1,:);  % FY1位置
+
+iu = 3; % FY1
+U = UAVs(iu,:);  % 无人机位置
 M_current = squeeze(Missiles_h(h_idx,:,:)); % 3x3, 3个导弹在当前高度
+
 % 使用该无人机在当前高度的评分作为权重
 weights = squeeze(Scores_h(h_idx, iu, :))'; % 1x3
+
 theta_vec = linspace(0,2*pi,360); % 航向角搜索范围
 D_vec = zeros(size(theta_vec));
 
 for i = 1:length(theta_vec)
     theta = theta_vec(i);
-    % 无人机沿theta方向前进一定距离d
-    d = 1000; % 假设沿航向移动1000米
-    U_new = U + d * [cos(theta), sin(theta), 0]; % 保持同高度
+    v = [cos(theta), sin(theta), 0]; % 航向方向向量
+    v_norm = norm(v);
     
-    % 计算到三导弹的加权距离之和
-    dist = sqrt( sum((M_current - U_new).^2,2) ); % 3x1
-    D_vec(i) = sum(weights .* dist');
+    dist = zeros(1,3);
+    for k = 1:3
+        w = M_current(k,:) - U;         % 向量从U指向导弹
+        cross_vw = cross(w, v);
+        dist(k) = norm(cross_vw)/v_norm; % 点到直线距离
+    end
+    
+    D_vec(i) = sum(weights .* dist); % 加权距离和
 end
 
 % 找到最优角度
 [~, idx_min] = min(D_vec);
 theta_opt = theta_vec(idx_min);
 fprintf('最优航向角 theta* = %.2f deg\n', rad2deg(theta_opt));
+
+%% 绘制加权距离随航向角变化曲线
+figure;
+plot(rad2deg(theta_vec), D_vec,'LineWidth',1.5);
+xlabel('航向角 θ (deg)');
+ylabel('加权距离之和');
+title(sprintf('FY1 最优航向角计算 @高度 %.1f m (权重=评分，距离到航线)', h));
+grid on;
+
+% 绘制无人机航线
+s = linspace(0,10000,100); % 沿航向延伸1500米
+line_points = U + s' * [cos(theta_opt), sin(theta_opt), 0];
+
+figure('Color','w'); hold on; grid on; axis equal;
+plot3(U(1),U(2),U(3),'bo','MarkerFaceColor','b','MarkerSize',8); % 无人机
+text(U(1),U(2),U(3),'  UAV','FontSize',10,'Color','b');
+
+plot3(line_points(:,1), line_points(:,2), line_points(:,3),'b--','LineWidth',1.5); % 航线
+
+plot3(M_current(:,1),M_current(:,2),M_current(:,3),'r^','MarkerFaceColor','r','MarkerSize',8); % 导弹
+for k=1:3
+    text(M_current(k,1),M_current(k,2),M_current(k,3), sprintf('  M%d',k),'FontSize',10,'Color','r');
+end
+
+xlabel('X'); ylabel('Y'); zlabel('Z');
+title(sprintf('UAV FY%d航向轨迹与导弹位置 @高度 %.1f m', iu, h));
+view(35,20);
+camlight; lighting gouraud;
+legend('UAV','航向轨迹','Missiles','Location','best');
 
