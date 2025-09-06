@@ -61,24 +61,36 @@ detonation_pos = [detonation_pos_x, detonation_pos_y, detonation_pos_z];
 % 5. 烟幕云团中心位置函数（考虑下沉）
 smoke_center_pos = @(t) detonation_pos - [0, 0, smoke_sink_speed * (t - detonation_time)];
 
-% 6. 新的遮蔽计算函数：基于圆锥角度判断
-function is_obscured = cylinder_obscuration_check(missile_pos, smoke_center, smoke_radius, cylinder_center, cylinder_radius, cylinder_height)
-    % 计算导弹是否被烟雾遮蔽圆柱体目标
+% 6. 新的遮蔽计算函数：基于圆锥角度判断，返回采样点统计
+function [obscured_count, total_count] = cylinder_obscuration_check(missile_pos, smoke_center, smoke_radius, cylinder_center, cylinder_radius, cylinder_height)
+    % 计算圆柱体表面采样点的遮蔽情况
     % missile_pos: 导弹位置
     % smoke_center: 烟雾球心位置
     % smoke_radius: 烟雾球半径
     % cylinder_center: 圆柱体中心位置
     % cylinder_radius: 圆柱体半径
     % cylinder_height: 圆柱体高度
+    % 返回值：[被遮蔽的采样点数, 总采样点数]
     
     % 计算导弹到烟雾球心的距离和半锥角theta1
      missile_to_smoke = smoke_center(:)' - missile_pos(:)';
      dist_to_smoke = norm(missile_to_smoke);
     
+    % 初始化采样点计数器
+    obscured_count = 0;
+    total_count = 0;
+    
     % 半锥角theta1：以导弹为顶点，烟雾球为底面的圆锥
     if dist_to_smoke <= smoke_radius
-        % 导弹在烟雾球内，完全遮蔽
-        is_obscured = true;
+        % 导弹在烟雾球内，所有采样点都被完全遮蔽
+        % 计算总采样点数
+        num_points_circumference = 36; % 圆周方向36个点
+        num_points_height = 10; % 高度方向10个点
+        num_radial = 5; % 径向5个层次
+        
+        % 侧面点数 + 顶底面点数
+        total_count = num_points_circumference * num_points_height + 2 * (1 + num_radial * num_points_circumference);
+        obscured_count = total_count;
         return;
     end
     
@@ -91,8 +103,6 @@ function is_obscured = cylinder_obscuration_check(missile_pos, smoke_center, smo
     % 圆柱底面中心和顶面中心
     cylinder_bottom = cylinder_center;
     cylinder_top = cylinder_center + [0, 0, cylinder_height];
-    
-    is_obscured = true; % 假设被遮蔽，直到找到未被遮蔽的点
     
     % 检查圆柱侧面的点
     for h_idx = 1:num_points_height
@@ -109,6 +119,9 @@ function is_obscured = cylinder_obscuration_check(missile_pos, smoke_center, smo
                 current_height
             ];
             
+            % 统计总采样点数
+            total_count = total_count + 1;
+            
             % 计算导弹到圆柱表面点的向量
              missile_to_surface = surface_point(:)' - missile_pos(:)';
              
@@ -117,10 +130,9 @@ function is_obscured = cylinder_obscuration_check(missile_pos, smoke_center, smo
              cos_theta2 = max(-1, min(1, cos_theta2)); % 限制在[-1,1]范围内
              theta2 = acos(cos_theta2);
             
-            % 如果theta1 <= theta2，说明该点未被遮蔽
-            if theta1 <= theta2
-                is_obscured = false;
-                return;
+            % 如果theta1 > theta2，说明该点被遮蔽
+            if theta1 > theta2
+                obscured_count = obscured_count + 1;
             end
         end
     end
@@ -140,14 +152,16 @@ function is_obscured = cylinder_obscuration_check(missile_pos, smoke_center, smo
                 % 中心点
                 surface_point = face_center;
                 
+                % 统计总采样点数
+                total_count = total_count + 1;
+                
                 missile_to_surface = surface_point(:)' - missile_pos(:)';
                  cos_theta2 = dot(missile_to_surface, missile_to_smoke) / (norm(missile_to_surface) * norm(missile_to_smoke));
                  cos_theta2 = max(-1, min(1, cos_theta2));
                  theta2 = acos(cos_theta2);
                 
-                if theta1 <= theta2
-                    is_obscured = false;
-                    return;
+                if theta1 > theta2
+                    obscured_count = obscured_count + 1;
                 end
             else
                 radius_ratio = r_idx / num_radial;
@@ -162,14 +176,16 @@ function is_obscured = cylinder_obscuration_check(missile_pos, smoke_center, smo
                         face_center(3)
                     ];
                     
+                    % 统计总采样点数
+                    total_count = total_count + 1;
+                    
                     missile_to_surface = surface_point(:)' - missile_pos(:)';
                      cos_theta2 = dot(missile_to_surface, missile_to_smoke) / (norm(missile_to_surface) * norm(missile_to_smoke));
                      cos_theta2 = max(-1, min(1, cos_theta2));
                      theta2 = acos(cos_theta2);
                     
-                    if theta1 <= theta2
-                        is_obscured = false;
-                        return;
+                    if theta1 > theta2
+                        obscured_count = obscured_count + 1;
                     end
                 end
             end
@@ -177,13 +193,27 @@ function is_obscured = cylinder_obscuration_check(missile_pos, smoke_center, smo
     end
 end
 
-% 7. 计算有效遮蔽时间
+% 7. 计算有效遮蔽时间和遮蔽度
 t_start_obscuration = -1;
 t_end_obscuration = -1;
 
+% 遮蔽度统计变量（基于圆柱体表面采样点）
+total_surface_points = 0;  % 总的圆柱体表面采样点数
+obscured_surface_points = 0;  % 被遮蔽的圆柱体表面采样点数
+
+% 完全遮蔽时间统计
+full_obscuration_start = -1;  % 完全遮蔽开始时间
+full_obscuration_end = -1;    % 完全遮蔽结束时间
+full_obscuration_duration = 0; % 完全遮蔽总时长
+in_full_obscuration = false;   % 当前是否处于完全遮蔽状态
+
 % 模拟时间从起爆开始到烟幕失效
 time_step = 0.0001;
+time_count = 0;
+max_obscured_ratio = 0;
+min_distance = inf;
 for t = detonation_time : time_step : (detonation_time + smoke_effective_duration)
+    time_count = time_count + 1;
     
     % 当前时刻的导弹位置
     current_missile_pos = missile_pos(t);
@@ -191,11 +221,40 @@ for t = detonation_time : time_step : (detonation_time + smoke_effective_duratio
     % 当前时刻烟幕云团中心位置
     current_smoke_center = smoke_center_pos(t);
     
-    % 使用新的圆柱体遮蔽判断函数
-    % 检查烟雾是否遮蔽圆柱体真目标
-    is_obscured = cylinder_obscuration_check(current_missile_pos, current_smoke_center, smoke_radius, true_target_pos, true_target_radius, true_target_height);
+    % 计算导弹到烟雾中心的距离
+    dist_to_smoke = norm(current_missile_pos - current_smoke_center);
+    min_distance = min(min_distance, dist_to_smoke);
     
-    if is_obscured
+    % 使用新的圆柱体遮蔽判断函数
+    % 获取当前时刻圆柱体表面采样点的遮蔽统计
+    [current_obscured, current_total] = cylinder_obscuration_check(current_missile_pos, current_smoke_center, smoke_radius, true_target_pos, true_target_radius, true_target_height);
+    
+    % 累计圆柱体表面采样点统计
+    total_surface_points = total_surface_points + current_total;
+    obscured_surface_points = obscured_surface_points + current_obscured;
+    
+    % 记录最大遮蔽比例
+    if current_total > 0
+        current_ratio = current_obscured / current_total;
+        max_obscured_ratio = max(max_obscured_ratio, current_ratio);
+        
+        % 判断是否完全遮蔽（所有采样点都被遮蔽）
+        is_fully_obscured = (current_obscured == current_total);
+        
+        if is_fully_obscured && ~in_full_obscuration
+            % 开始完全遮蔽
+            full_obscuration_start = t;
+            in_full_obscuration = true;
+        elseif ~is_fully_obscured && in_full_obscuration
+            % 结束完全遮蔽
+            full_obscuration_end = t;
+            full_obscuration_duration = full_obscuration_duration + (full_obscuration_end - full_obscuration_start);
+            in_full_obscuration = false;
+        end
+    end
+    
+    % 判断是否存在遮蔽效果（任何采样点被遮蔽即认为有遮蔽）
+    if current_obscured > 0
         if t_start_obscuration == -1
             t_start_obscuration = t;
         end
@@ -203,12 +262,42 @@ for t = detonation_time : time_step : (detonation_time + smoke_effective_duratio
     end
 end
 
+% 处理循环结束时仍在完全遮蔽状态的情况
+if in_full_obscuration
+    full_obscuration_end = detonation_time + smoke_effective_duration;
+    full_obscuration_duration = full_obscuration_duration + (full_obscuration_end - full_obscuration_start);
+end
+
+% 计算遮蔽度
+if total_surface_points > 0
+    obscuration_ratio = obscured_surface_points / total_surface_points;
+else
+    obscuration_ratio = 0;
+end
+
 % --- 输出结果 ---
 if t_start_obscuration ~= -1
     effective_duration = t_end_obscuration - t_start_obscuration;
     fprintf('烟幕弹对M1的有效遮蔽开始时间: %.4f 秒\n', t_start_obscuration);
-    fprintf('烟幕弹对M1的有效遮蔽结束时间: %.4f 秒\n', t_end_obscuration);
-    fprintf('有效遮蔽总时长: %.4f 秒\n', effective_duration);
+     fprintf('烟幕弹对M1的有效遮蔽结束时间: %.4f 秒\n', t_end_obscuration);
+     fprintf('有效遮蔽总时长: %.4f 秒\n', effective_duration);
+     fprintf('完全遮蔽总时长: %.4f 秒\n', full_obscuration_duration);
+    
+    % 输出遮蔽度信息
+    fprintf('\n遮蔽度统计（基于圆柱体表面采样点）:\n');
+    fprintf('总圆柱体表面采样点数: %d\n', total_surface_points);
+    fprintf('被遮蔽的圆柱体表面采样点数: %d\n', obscured_surface_points);
+    fprintf('遮蔽度: %.4f (%.2f%%)\n', obscuration_ratio, obscuration_ratio * 100);
+    
+    % 添加调试输出信息
+    fprintf('\n关键参数分析:\n');
+    fprintf('烟雾半径: %.1f米\n', smoke_radius);
+    fprintf('导弹到烟雾最近距离: %.1f米\n', min_distance);
+    fprintf('单个时间点最大遮蔽比例: %.2f%%\n', max_obscured_ratio * 100);
+    fprintf('时间采样点数: %d\n', time_count);
+    if time_count > 0
+        fprintf('每时间点表面采样点数: %d\n', total_surface_points / time_count);
+    end
     
     % 输出关键位置信息
     fprintf('\n关键位置信息:\n');
@@ -217,6 +306,22 @@ if t_start_obscuration ~= -1
     fprintf('起爆时刻: %.4f 秒\n', detonation_time);
 else
     fprintf('在给定的参数下，烟幕弹未能有效遮蔽M1。\n');
+    fprintf('完全遮蔽总时长: %.4f 秒\n', full_obscuration_duration);
+    % 即使没有遮蔽，也输出遮蔽度统计
+    fprintf('\n遮蔽度统计（基于圆柱体表面采样点）:\n');
+    fprintf('总圆柱体表面采样点数: %d\n', total_surface_points);
+    fprintf('被遮蔽的圆柱体表面采样点数: %d\n', obscured_surface_points);
+    fprintf('遮蔽度: %.4f (%.2f%%)\n', obscuration_ratio, obscuration_ratio * 100);
+    
+    % 添加调试输出信息
+    fprintf('\n关键参数分析:\n');
+    fprintf('烟雾半径: %.1f米\n', smoke_radius);
+    fprintf('导弹到烟雾最近距离: %.1f米\n', min_distance);
+    fprintf('单个时间点最大遮蔽比例: %.2f%%\n', max_obscured_ratio * 100);
+    fprintf('时间采样点数: %d\n', time_count);
+    if time_count > 0
+        fprintf('每时间点表面采样点数: %d\n', total_surface_points / time_count);
+    end
 end
 
 % --- 可视化 (2D: X-Z平面) ---
